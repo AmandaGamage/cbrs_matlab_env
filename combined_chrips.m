@@ -1,113 +1,110 @@
-clc; clear; close all;
+%% Display a Single Example Spectrogram for a Given CBRS Class
+% Example class: Channel 1 = Radar, Channel 2 = LTE
 
-%% Parameters
-fs = 1e6; % Sampling frequency (1 MHz)
-t_total = 1e-3; % Total duration (1 ms)
-t = 0:1/fs:t_total-1/fs; % Time vector
+clear; clc; close all
 
-% Radar pulse specs
-pulseWidth = 3e-6;
-PRI = 50e-6;
-numPulses = floor(t_total / PRI);
-f_start = 3.55e9; f_end = 3.65e9; % CBRS band
+%% Global Parameters
+fs = 20e6;                        % Sampling frequency: 20 MHz
+duration = 250e-6;                % Duration: 250 microseconds
+t = (0:1/fs:duration-1/fs)';       % Time vector (column vector)
 
-%% Step 1: Incumbent (Radar) Signal
-incumbentSignal = zeros(size(t));
-rng(42); % For reproducibility
+% Spectrogram parameters
+window = hamming(200);
+noverlap = 124;
+nfft = 256;
 
-%% Step 1: Incumbent (Radar) Signal with Chirps and Staggered PRI
-incumbentSignal = zeros(size(t));
-rng(42); % For reproducibility
+% Frequency shift for channel 2 to appear in the upper part
+fc_shift = 5e6; % 5 MHz shift
 
-pulseStart = 0;
-i = 1;
-while pulseStart < t_total
-    % Randomized PRI for staggered pulse repetition
-    currentPRI = PRI + (rand() - 0.5) * 20e-6; % ±10 µs jitter
-    pulseStartIdx = round(pulseStart * fs) + 1;
-    pulseEndIdx = min(round(pulseStartIdx + pulseWidth * fs), length(t));
-    
-    if pulseEndIdx > length(t)
-        break;
-    end
-    
-    pulse_t = t(pulseStartIdx:pulseEndIdx) - t(pulseStartIdx);
-    
+%% Generate Signals for Each Channel
+% Channel 1: Radar (incumbent) signal
+ch1 = getChannelSignal('Radar', t, 0, fs);
 
-    chirpBandwidth = 20e6; % Wider bandwidth for angular streak
-    f0 = f_start + (f_end - f_start) * rand(); 
-    f1 = f0 + chirpBandwidth * ((rand() > 0.5)*2 - 1); % Up or down
+% Channel 2: PAL (burst OFDM) signal
+ch2 = getChannelSignal('LTE', t, fc_shift, fs);
 
-    % Use a windowed pulse (e.g., Hamming envelope) to shape it cleanly
-    w = hamming(length(pulse_t))'; 
-    chirpSignal = 10 * w .* chirp(pulse_t, f0, pulse_t(end), f1, 'linear');
-    incumbentSignal(pulseStartIdx:pulseEndIdx) = chirpSignal;
+% Combine channels (they are independent and added in the time domain)
+combined = ch1 + ch2;
+combined = combined(:); % ensure a 1-D vector
 
-    
-    % Update for next pulse
-    pulseStart = pulseStart + currentPRI;
-    i = i + 1;
-end
-
-%% Step 2: PAL User Signal (OFDM with Burst)
-M = 16;
-Nsub = 32;
-numSymbols = floor(length(t)/Nsub);
-dataBits = randi([0 M-1], Nsub, numSymbols);
-qamSymbols = qammod(dataBits, M, 'UnitAveragePower', true);
-palSignal = ifft(qamSymbols, Nsub);
-
-% High-power burst
-burstIdx = round(numSymbols / 2);
-burstFreqIdx = round(Nsub / 2);
-burstPower = 100;
-burstWidth = 5;
-palSignal(burstFreqIdx, burstIdx:burstIdx+burstWidth) = ...
-    burstPower * log2(burstPower) * abs(burstPower);
-
-% Tone at lower subcarrier
-toneFreqIdx = round(Nsub / 4);
-palSignal(toneFreqIdx, :) = 5;
-
-% Add noise
-palSignal = palSignal + 0.1 * randn(size(palSignal));
-
-% Serialize
-palTimeSignal = real(reshape(ifft(palSignal, Nsub), 1, []));
-if length(palTimeSignal) >= length(t)
-    palTimeSignal = palTimeSignal(1:length(t));
-else
-    palTimeSignal(end+1:length(t)) = 0; % Zero-pad if it's too short
-end
-
-
-%% Step 3: Combine Incumbent and PAL signals
-combinedSignal = incumbentSignal + palTimeSignal;
-
-%% Step 4: Spectrograms
+%% Compute and Display Spectrogram
 figure;
+spectrogram(combined, window, noverlap, nfft, fs, 'yaxis');
+title('Spectrogram for Class: CH1 = Radar, CH2 = LTE');
+xlabel('Time (s)');
+ylabel('Frequency (MHz)');
+colormap gray;
+colorbar;
 
-subplot(3,1,1);
-window = hamming(16);
-noverlap = 8;
-nfft = 1024;
+%% ----- Helper Functions -----
+function sig = getChannelSignal(type, t, freqShift, fs)
+    switch type
+        case 'Empty'
+            % Very low amplitude noise
+            sig = 0.001 * randn(size(t));
+        case 'Radar'
+            sig = generateRadar(t);
+        case 'LTE'
+            sig = generatePAL(t);
+        case 'Collision'
+            sig = generateRadar(t) + generatePAL(t);
+        otherwise
+            sig = zeros(size(t));
+    end
+    % Apply frequency shift if needed (multiply by complex exponential)
+    if freqShift ~= 0
+        sig = sig .* exp(1j*2*pi*freqShift*t);
+    end
+end
 
-[~, F, T, P] = spectrogram(combinedSignal, window, noverlap, nfft, fs, 'yaxis');
-imagesc(T, F/1e6, 10*log10(abs(P)));
-colormap(flipud(gray));
-ylabel('Freq (MHz)'); xlabel('Time (s)');
-title('Combined Spectrogram: Incumbent + PAL');
-axis xy; clim([-80 0]); colorbar;
+% -----------------------------
+% Helper: Radar Chirp Generator
+% -----------------------------
+function sig = generateRadar(t)
+    % Radar parameters
+    f0 = 3.55e9;
+    bw = 10e6;
+    pulse_duration = 100e-6; % Radar pulse does not span whole signal
+    sig = zeros(size(t));
+    idx = t <= pulse_duration;
+    % Generate chirp for the pulse duration only
+    i = chirp(t(idx), f0 - bw/2, pulse_duration, f0 + bw/2, 'linear');
+    q = chirp(t(idx), f0 - bw/2, pulse_duration, f0 + bw/2, 'linear', 90);
+    sig(idx) = i + 1i*q;
+end
 
-subplot(3,1,2);
-spectrogram(palTimeSignal, 64, 50, 128, fs, 'yaxis'); 
-colormap gray; title('PAL Signal Only');
-
-subplot(3,1,3);
-NsubGAA = 64;
-gaaSymbols = qammod(randi([0 M-1], NsubGAA, 1), M);
-gaaSignal = ifft(gaaSymbols, NsubGAA);
-Nrep = floor(length(t) / NsubGAA);
-gaaSignal = repmat(gaaSignal, [1, Nrep]);
-spectrogram(gaaSignal(:), 128, 120, 128, fs, 'yaxis');
-colormap gray; title('GAA Signal');
+% -----------------------------
+% Helper: PAL (Burst OFDM) Generator
+% -----------------------------
+function sig = generatePAL(t)
+    M = 16; 
+    Nsub = 32;
+    numSymbols = floor(length(t)/Nsub);
+    dataBits = randi([0 M-1], Nsub, numSymbols);
+    qamSymbols = qammod(dataBits, M, 'UnitAveragePower', true);
+    sigMatrix = ifft(qamSymbols, Nsub);
+    
+    % High-power burst in the middle of the OFDM frame
+    burstIdx = round(numSymbols / 2);
+    burstFreqIdx = round(Nsub / 2);
+    burstPower = 100;
+    burstWidth = 5;
+    endIdx = min(burstIdx+burstWidth, numSymbols);
+    sigMatrix(burstFreqIdx, burstIdx:endIdx) = burstPower * log2(burstPower) * abs(burstPower);
+    
+    % Tone at a lower subcarrier
+    toneFreqIdx = round(Nsub / 4);
+    sigMatrix(toneFreqIdx, :) = 5;
+    
+    % Add noise
+    sigMatrix = sigMatrix + 0.1 * randn(size(sigMatrix));
+    
+    % Serialize: reshape into a 1-D time domain signal
+    tempSig = ifft(sigMatrix, Nsub);
+    sig = reshape(tempSig, 1, []);
+    sig = sig(1:min(length(t), length(sig)));
+    if length(sig) < length(t)
+        sig(end+1:length(t)) = 0;
+    end
+    sig = sig(:);
+end
