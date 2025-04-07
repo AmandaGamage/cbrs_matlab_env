@@ -1,78 +1,84 @@
-% Define model names and test dataset paths
-models = ["model_GAN", "model_DDPM", "model_VQ-VAE"];
-testDataPaths = ["E:\Msc\Lab\data\fid_data\test_GAN", ...
-                 "E:\Msc\Lab\data\fid_data\test_DDPM", ...
-                 "E:\Msc\Lab\data\fid_data\test_VQ-VAE"];
+function trainCollisionCNN(datasetPath, modelSavePath)
+    % Folders that represent "collision" class
+    collisionFolders = [
+        "ch1_empty_ch2_collision", ...
+        "ch1_collision_ch2_empty", ...
+        "ch1_collision_ch2_secondary", ...
+        "ch1_primary_ch2_collision"
+    ];
 
-for modelIdx = 1:length(models)
-    model_name = models(modelIdx);
-    testDataPath = testDataPaths(modelIdx);
-    
-    onnx_model_path = fullfile('E:\Msc\Lab\data\fid_data', model_name + ".onnx");
-    class_names_path = fullfile('E:\Msc\Lab\data\fid_data', model_name + "_classes.txt");
+    % Load all labeled image data
+    imds = imageDatastore(datasetPath, ...
+        'IncludeSubfolders', true, ...
+        'LabelSource', 'foldernames');
 
-    % Load class names from file
-    fid = fopen(class_names_path, 'r');
-    class_names = textscan(fid, '%s');
-    fclose(fid);
-    class_names = categorical(class_names{1});  % Convert to categorical array
+    % Binary relabeling: Collision vs NonCollision
+    isCollision = ismember(imds.Labels, collisionFolders);
+    imds.Labels = categorical(isCollision, [0 1], {'NonCollision', 'Collision'});
 
-    % Load ONNX model with class names
-    net = importONNXNetwork(onnx_model_path, 'OutputLayerType', 'classification', 'Classes', class_names);
-    disp("✅ Loaded ONNX model: " + model_name);
+    % Balance classes
+    tbl = countEachLabel(imds);
+    minCount = min(tbl.Count);
+    imds = splitEachLabel(imds, minCount, 'randomized');
 
-    % Load test data
-    testData = imageDatastore(testDataPath, ...
-        "IncludeSubfolders", true, ...
-        "LabelSource", "foldernames", ...
-        "ReadFcn", @preprocessImage);  % Apply preprocessing
+    % Split into training and validation sets
+    [imdsTrain, imdsVal] = splitEachLabel(imds, 0.8, 'randomized');
 
-    % Get true labels
-    trueLabels = testData.Labels;
-    predictedLabels = categorical();  % Empty array to store predictions
+    % Data augmentation
+    augmenter = imageDataAugmenter( ...
+        'RandRotation', [-10 10], ...
+        'RandXTranslation', [-5 5], ...
+        'RandYTranslation', [-5 5]);
 
-    % Classify images and store predictions
-    while hasdata(testData)
-        img = read(testData);  % Read image
-        img = reshape(img, [448, 448, 3, 1]);  % Ensure batch dimension
+    % ResNet18 expects 224x224 RGB images
+    inputSize = [224 224 3];
+    trainDS = augmentedImageDatastore(inputSize, imdsTrain, ...
+        'DataAugmentation', augmenter, ...
+        'ColorPreprocessing', 'gray2rgb');
+    valDS = augmentedImageDatastore(inputSize, imdsVal, ...
+        'ColorPreprocessing', 'gray2rgb');
 
-        scores = predict(net, img);  % Get class scores
-        [~, predictedIdx] = max(scores, [], 2);  % Get class index
-        predictedLabels(end+1) = class_names(predictedIdx);  % Use manually loaded class names
-    end
+    % Load pretrained ResNet-18
+    net = resnet18;
+    lgraph = layerGraph(net);
 
-    % Compute accuracy for each class
-    uniqueClasses = unique(trueLabels);  % Get list of unique class labels
-    classAccuracies = zeros(length(uniqueClasses), 1);
+    % Modify final layers for binary classification
+    lgraph = replaceLayer(lgraph, 'fc1000', fullyConnectedLayer(2, 'Name', 'fc_binary'));
+    lgraph = replaceLayer(lgraph, 'ClassificationLayer_predictions', classificationLayer('Name', 'output'));
 
-    for i = 1:length(uniqueClasses)
-        class = uniqueClasses(i);
-        correctPredictions = sum(predictedLabels(trueLabels == class) == class);
-        totalSamples = sum(trueLabels == class);
-        classAccuracies(i) = (correctPredictions / totalSamples) * 100;
-    end
+    % Training options
+    options = trainingOptions('sgdm', ...
+        'InitialLearnRate', 1e-4, ...
+        'MaxEpochs', 10, ...
+        'MiniBatchSize', 32, ...
+        'Shuffle', 'every-epoch', ...
+        'ValidationData', valDS, ...
+        'ValidationFrequency', 30, ...
+        'ExecutionEnvironment', 'gpu', ...
+        'Verbose', false, ...
+        'Plots', 'training-progress');
 
-    % Display per-class accuracy
-    disp("📊 Class-wise Accuracy for " + model_name + ":");
-    for i = 1:length(uniqueClasses)
-        disp(string(uniqueClasses(i)) + ": " + string(classAccuracies(i)) + "%");
-    end
+    % Train the network
+    trainedNet = trainNetwork(trainDS, lgraph, options);
 
-    disp("------------------------------------------------");
+    % Save the model
+    save(modelSavePath, 'trainedNet');
 end
 
-% Image preprocessing function
-function img = preprocessImage(filename)
-    img = imread(filename);
-    img = imresize(img, [448, 448]);  % Resize to model's input size
-    img = im2single(img);  % Convert to single precision
 
-    % Ensure the image has 3 channels (convert grayscale to RGB)
-    if size(img, 3) == 1
-        img = repmat(img, [1, 1, 3]);  
-    end
-    img = img(:,:,1:3);  % Ensure exactly 3 channels
+% === main script: cnn.m ===
+datasetPaths = {
+    'E:\Msc\Lab\data\fid_data\combined_DDPM'
+    'E:\Msc\Lab\data\fid_data\combined_GAN'
+    'E:\Msc\Lab\data\fid_data\combined_VQ-VAE'
+};
 
-    % Add batch dimension (ONNX models expect 4D input)
-    img = reshape(img, [448, 448, 3, 1]);  
+modelNames = {
+    'cnn_ddpm_resnet'
+    'cnn_gan_resnet'
+    'cnn_vqvae_resnet'
+};
+
+for i = 1:length(datasetPaths)
+    trainCollisionCNN(datasetPaths{i}, modelNames{i});
 end
