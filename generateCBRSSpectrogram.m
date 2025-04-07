@@ -12,7 +12,7 @@ numPulses = floor(t_total / pulseRepetitionInterval);
 f_start = 3.55e9; % Start frequency (3.55 GHz)
 f_end = 3.65e9; % End frequency (3.65 GHz)
 
-%% Step 2: Generate Incumbent (Radar) User Signal with Frequency Hopping
+%% Step 2: Generate Incumbent (Radar) User Signal with Grouped Vertical Pulses
 incumbentSignal = zeros(size(t));
 
 for i = 1:numPulses
@@ -27,7 +27,7 @@ for i = 1:numPulses
     incumbentSignal(pulseStartIdx:pulseEndIdx) = 10 * sin(2 * pi * frequency * pulseTime); % Increase amplitude significantly
 end
 
-%% **Step 2: Generate PAL User Signal**
+%% **Step 3: Generate PAL User Signal**
 M = 16; % 16-QAM modulation
 Nsub = 32; % Number of OFDM subcarriers
 numSymbols = floor(length(t)/Nsub); % Ensure integer size
@@ -59,16 +59,27 @@ gaaSignal = ifft(ofdmSymbols, Nsub); % Apply IFFT for OFDM
 Nrep = floor(length(t) / Nsub); % Ensure an integer replication factor
 gaaSignal = repmat(gaaSignal, [1, Nrep]); % Repeat to match time
 
-%% **Step 5: Convert to Spectrograms**
+%% Step 5: Convert to Spectrograms
 figure;
-
 subplot(3,1,1);
-spectrogram(incumbentSignal, hann(128), 120, 128, fs, 'yaxis'); % Apply Hann window
-colormap gray % Reverse colormap (darker is lower power)
+% Spectrogram parameters optimized for showing vertical lines
+window = hamming(24); % Very short window for better time resolution
+noverlap = 12; 
+nfft = 1024; % Higher frequency resolution
+[~, F, T, P] = spectrogram(incumbentSignal, window, noverlap, nfft, fs, 'yaxis');
+
+% Plot with high contrast to make pulses stand out as white
+imagesc(T, F/1e6, 10*log10(abs(P)));
+colormap(flipud(gray)); % White is high intensity, black is low
+ylabel('Frequency (MHz)');
+xlabel('Time (s)');
 title('Spectrogram of Incumbent (Radar) User');
+axis xy;
+clim([-80 0]); % More extreme contrast to make pulses whiter
+colorbar;
 
-
-
+% Add a colorbar for reference
+colorbar;
 subplot(3,1,2);
 spectrogram(palSignal(:), 64, 50, 128, fs, 'yaxis'); 
 colormap gray; % Convert to black and white

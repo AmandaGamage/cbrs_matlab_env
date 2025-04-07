@@ -1,0 +1,113 @@
+clc; clear; close all;
+
+%% Parameters
+fs = 1e6; % Sampling frequency (1 MHz)
+t_total = 1e-3; % Total duration (1 ms)
+t = 0:1/fs:t_total-1/fs; % Time vector
+
+% Radar pulse specs
+pulseWidth = 3e-6;
+PRI = 50e-6;
+numPulses = floor(t_total / PRI);
+f_start = 3.55e9; f_end = 3.65e9; % CBRS band
+
+%% Step 1: Incumbent (Radar) Signal
+incumbentSignal = zeros(size(t));
+rng(42); % For reproducibility
+
+%% Step 1: Incumbent (Radar) Signal with Chirps and Staggered PRI
+incumbentSignal = zeros(size(t));
+rng(42); % For reproducibility
+
+pulseStart = 0;
+i = 1;
+while pulseStart < t_total
+    % Randomized PRI for staggered pulse repetition
+    currentPRI = PRI + (rand() - 0.5) * 20e-6; % ±10 µs jitter
+    pulseStartIdx = round(pulseStart * fs) + 1;
+    pulseEndIdx = min(round(pulseStartIdx + pulseWidth * fs), length(t));
+    
+    if pulseEndIdx > length(t)
+        break;
+    end
+    
+    pulse_t = t(pulseStartIdx:pulseEndIdx) - t(pulseStartIdx);
+    
+
+    chirpBandwidth = 20e6; % Wider bandwidth for angular streak
+    f0 = f_start + (f_end - f_start) * rand(); 
+    f1 = f0 + chirpBandwidth * ((rand() > 0.5)*2 - 1); % Up or down
+
+    % Use a windowed pulse (e.g., Hamming envelope) to shape it cleanly
+    w = hamming(length(pulse_t))'; 
+    chirpSignal = 10 * w .* chirp(pulse_t, f0, pulse_t(end), f1, 'linear');
+    incumbentSignal(pulseStartIdx:pulseEndIdx) = chirpSignal;
+
+    
+    % Update for next pulse
+    pulseStart = pulseStart + currentPRI;
+    i = i + 1;
+end
+
+%% Step 2: PAL User Signal (OFDM with Burst)
+M = 16;
+Nsub = 32;
+numSymbols = floor(length(t)/Nsub);
+dataBits = randi([0 M-1], Nsub, numSymbols);
+qamSymbols = qammod(dataBits, M, 'UnitAveragePower', true);
+palSignal = ifft(qamSymbols, Nsub);
+
+% High-power burst
+burstIdx = round(numSymbols / 2);
+burstFreqIdx = round(Nsub / 2);
+burstPower = 100;
+burstWidth = 5;
+palSignal(burstFreqIdx, burstIdx:burstIdx+burstWidth) = ...
+    burstPower * log2(burstPower) * abs(burstPower);
+
+% Tone at lower subcarrier
+toneFreqIdx = round(Nsub / 4);
+palSignal(toneFreqIdx, :) = 5;
+
+% Add noise
+palSignal = palSignal + 0.1 * randn(size(palSignal));
+
+% Serialize
+palTimeSignal = real(reshape(ifft(palSignal, Nsub), 1, []));
+if length(palTimeSignal) >= length(t)
+    palTimeSignal = palTimeSignal(1:length(t));
+else
+    palTimeSignal(end+1:length(t)) = 0; % Zero-pad if it's too short
+end
+
+
+%% Step 3: Combine Incumbent and PAL signals
+combinedSignal = incumbentSignal + palTimeSignal;
+
+%% Step 4: Spectrograms
+figure;
+
+subplot(3,1,1);
+window = hamming(16);
+noverlap = 8;
+nfft = 1024;
+
+[~, F, T, P] = spectrogram(combinedSignal, window, noverlap, nfft, fs, 'yaxis');
+imagesc(T, F/1e6, 10*log10(abs(P)));
+colormap(flipud(gray));
+ylabel('Freq (MHz)'); xlabel('Time (s)');
+title('Combined Spectrogram: Incumbent + PAL');
+axis xy; clim([-80 0]); colorbar;
+
+subplot(3,1,2);
+spectrogram(palTimeSignal, 64, 50, 128, fs, 'yaxis'); 
+colormap gray; title('PAL Signal Only');
+
+subplot(3,1,3);
+NsubGAA = 64;
+gaaSymbols = qammod(randi([0 M-1], NsubGAA, 1), M);
+gaaSignal = ifft(gaaSymbols, NsubGAA);
+Nrep = floor(length(t) / NsubGAA);
+gaaSignal = repmat(gaaSignal, [1, Nrep]);
+spectrogram(gaaSignal(:), 128, 120, 128, fs, 'yaxis');
+colormap gray; title('GAA Signal');
