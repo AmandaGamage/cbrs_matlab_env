@@ -35,6 +35,7 @@ xlabel('Time (s)');
 ylabel('Frequency (MHz)');
 colormap gray;
 colorbar;
+ylim([6 12]); % Show only 6 to 12 MHz
 
 %% ----- Helper Functions -----
 function sig = getChannelSignal(type, t, freqShift, fs)
@@ -61,16 +62,25 @@ end
 % Helper: Radar Chirp Generator
 % -----------------------------
 function sig = generateRadar(t)
-    % Radar parameters
-    f0 = 3.55e9;
-    bw = 10e6;
-    pulse_duration = 100e-6; % Radar pulse does not span whole signal
+    fs = 20e6;                  % Sampling frequency (Hz)
+    chirp_duration = 40e-6;     % Duration of each chirp (50 µs)
+    spacing = 45e-6;            % Spacing between chirps (60 µs)
+    f0_start = 11e6;            % Chirp starts at 11 MHz
+    f0_end = 8e6;               % Chirp ends at 8 MHz
+
     sig = zeros(size(t));
-    idx = t <= pulse_duration;
-    % Generate chirp for the pulse duration only
-    i = chirp(t(idx), f0 - bw/2, pulse_duration, f0 + bw/2, 'linear');
-    q = chirp(t(idx), f0 - bw/2, pulse_duration, f0 + bw/2, 'linear', 90);
-    sig(idx) = i + 1i*q;
+    total_time = t(end);
+    
+    % Generate multiple chirps
+    chirp_start_times = 0:spacing:(total_time - chirp_duration);
+    
+    for s = chirp_start_times
+        idx = (t >= s) & (t < s + chirp_duration);
+        local_t = t(idx) - s; % time relative to chirp start
+        i = chirp(local_t, f0_start, chirp_duration, f0_end, 'linear');
+        q = chirp(local_t, f0_start, chirp_duration, f0_end, 'linear', 90);
+        sig(idx) = sig(idx) + (i + 1i*q); % Add to total signal
+    end
 end
 
 % -----------------------------
@@ -88,13 +98,13 @@ function sig = generatePAL(t)
     burstIdx = round(numSymbols / 2);
     burstFreqIdx = round(Nsub / 2);
     burstPower = 100;
-    burstWidth = 5;
+    burstWidth = 10;
     endIdx = min(burstIdx+burstWidth, numSymbols);
     sigMatrix(burstFreqIdx, burstIdx:endIdx) = burstPower * log2(burstPower) * abs(burstPower);
     
     % Tone at a lower subcarrier
     toneFreqIdx = round(Nsub / 4);
-    sigMatrix(toneFreqIdx, :) = 5;
+    sigMatrix(toneFreqIdx, :) = 4;
     
     % Add noise
     sigMatrix = sigMatrix + 0.1 * randn(size(sigMatrix));
