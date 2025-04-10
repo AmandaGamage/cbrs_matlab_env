@@ -10,7 +10,9 @@ function trainCollisionCNN(datasetPath, modelSavePath)
     % Load all labeled image data
     imds = imageDatastore(datasetPath, ...
         'IncludeSubfolders', true, ...
-        'LabelSource', 'foldernames');
+        'LabelSource', 'foldernames', ...
+        'ReadFcn', @readGrayscaleImage);  % Ensures grayscale images
+
 
     % Binary relabeling: Collision vs NonCollision
     isCollision = ismember(imds.Labels, collisionFolders);
@@ -31,20 +33,41 @@ function trainCollisionCNN(datasetPath, modelSavePath)
         'RandYTranslation', [-5 5]);
 
     % ResNet18 expects 224x224 RGB images
-    inputSize = [224 224 3];
+    inputSize = [224 224 1];
     trainDS = augmentedImageDatastore(inputSize, imdsTrain, ...
         'DataAugmentation', augmenter, ...
-        'ColorPreprocessing', 'gray2rgb');
+        'ColorPreprocessing', 'none');
     valDS = augmentedImageDatastore(inputSize, imdsVal, ...
-        'ColorPreprocessing', 'gray2rgb');
+        'ColorPreprocessing', 'none');
 
     % Load pretrained ResNet-18
     net = resnet18;
     lgraph = layerGraph(net);
 
-    % Modify final layers for binary classification
-    lgraph = replaceLayer(lgraph, 'fc1000', fullyConnectedLayer(2, 'Name', 'fc_binary'));
-    lgraph = replaceLayer(lgraph, 'ClassificationLayer_predictions', classificationLayer('Name', 'output'));
+% === Replace input layer ===
+    newInputLayer = imageInputLayer([224 224 1], ...
+        'Name', 'input', ...
+        'Normalization', 'zerocenter');
+    lgraph = replaceLayer(lgraph, 'data', newInputLayer);  % 'data' is the input layer name in resnet18
+
+% === Modify first conv layer to accept 1 channel ===
+    firstConvLayer = lgraph.Layers(2);
+    newWeights = mean(firstConvLayer.Weights, 3);  % Average over RGB channels
+    newWeights = reshape(newWeights, size(newWeights,1), size(newWeights,2), 1, []);
+    newConvLayer = convolution2dLayer(firstConvLayer.FilterSize, ...
+        firstConvLayer.NumFilters, ...
+        'Stride', firstConvLayer.Stride, ...
+        'Padding', firstConvLayer.PaddingSize, ...
+        'Weights', newWeights, ...
+        'Bias', firstConvLayer.Bias, ...
+        'Name', firstConvLayer.Name);
+    lgraph = replaceLayer(lgraph, firstConvLayer.Name, newConvLayer);
+
+    % === Replace final layers for binary classification ===
+    lgraph = replaceLayer(lgraph, 'fc1000', ...
+        fullyConnectedLayer(2, 'Name', 'fc_binary'));
+    lgraph = replaceLayer(lgraph, 'ClassificationLayer_predictions', ...
+        classificationLayer('Name', 'output'));
 
     % Training options
     options = trainingOptions('sgdm', ...
@@ -81,4 +104,12 @@ modelNames = {
 
 for i = 1:length(datasetPaths)
     trainCollisionCNN(datasetPaths{i}, modelNames{i});
+end
+
+function img = readGrayscaleImage(filename)
+    img = imread(filename);
+    if size(img, 3) == 3
+        img = rgb2gray(img);
+    end
+    img = im2single(img);  % Normalize to single precision [0,1]
 end

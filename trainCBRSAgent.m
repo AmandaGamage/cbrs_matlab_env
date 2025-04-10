@@ -1,5 +1,8 @@
 % Load pretrained CNN
-load cnnCBRSModel.mat cnnModel % <-- assumes your CNN model is saved
+whos('-file', 'cnn_ddpm_resnet.mat')
+
+load cnn_ddpm_resnet.mat trainedNet 
+cnnModel = trainedNet;
 
 % Create environment
 env = rlCBRSEnvironment(cnnModel);
@@ -18,7 +21,17 @@ dnn = [
     fullyConnectedLayer(numel(actInfo.Elements))
     ];
 
-criticOpts = rlRepresentationOptions('LearnRate',1e-3,'GradientThreshold',1);
+criticOpts = rlRepresentationOptions( ...
+    'LearnRate', 1e-3, ...
+    'GradientThreshold', 1, ...
+    'UseDevice', 'gpu');  
+
+if canUseGPU
+    disp('✅ GPU available and will be used.');
+else
+    warning('⚠️ GPU not available. Training will fall back to CPU.');
+end
+
 critic = rlQValueRepresentation(dnn, obsInfo, actInfo, ...
     'Observation', {'input'}, criticOpts);
 
@@ -40,3 +53,7 @@ trainOpts = rlTrainingOptions(...
     'Plots', 'training-progress');
 
 trainingStats = train(agent, env, trainOpts);
+
+save(['trainedAgent_' datetime("now", 'yyyymmdd_HHMMSS') '.mat'], 'agent');
+
+evaluateCBRSAgent(agent, env); 

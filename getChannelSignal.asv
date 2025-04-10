@@ -1,0 +1,125 @@
+% Main script to run the code
+clc;
+clear;
+
+% Parameters
+fs = 20e6; % Sampling frequency (20 MHz)
+t = 0:1/fs:1e-3; % Time vector (1 ms duration)
+freqShift = 0; % Frequency shift (e.g., 0 Hz)
+type = 'Collision'; % Signal type ('Empty', 'Radar', 'LTE', or 'Collision')
+
+% Generate the signal
+sig = getChannelSignal(type, t, freqShift, fs);
+
+% Generate and display the spectrogram
+window = 512; % Window size
+noverlap = 256; % Overlap
+nfft = 1024; % FFT size
+[S, F, T] = spectrogram(sig, window, noverlap, nfft, fs);
+
+% Convert to grayscale
+spectrogramImage = abs(S);
+spectrogramImage = mat2gray(log(spectrogramImage + 1e-6)); % Log scale for better contrast
+
+% Display the spectrogram
+figure;
+imshow(spectrogramImage, []);
+title(['Spectrogram of ' type ' Signal']);
+xlabel('Time');
+ylabel('Frequency');
+
+% --- Function Definitions ---
+
+function sig = getChannelSignal(type, t, freqShift, fs)
+    % Display signal request for debugging
+    disp(['getChannelSignal: type = ' type ', t size = ' num2str(length(t))]);
+
+    switch type
+        case 'Empty'
+            sig = 0.001 * randn(size(t)); % Low-power noise
+
+        case 'Radar'
+            sig = generateRadar(t, fs);
+
+        case 'LTE'
+            sig = generatePAL(t, fs);
+
+        case 'Collision'
+            sigRadar = generateRadar(t, fs);
+            sigPAL = generatePAL(t, fs);
+            minLen = min(length(sigRadar), length(sigPAL));
+            sig = 0.7 * sigRadar(1:minLen) + 0.3 * sigPAL(1:minLen); % Combine with scaling
+
+        otherwise
+            sig = zeros(size(t));
+    end
+
+    % Apply frequency shift if needed
+    if freqShift ~= 0
+        sig = sig .* exp(1j * 2 * pi * freqShift * t(1:length(sig)));
+    end
+
+    % Ensure signal length matches time vector
+    sig = sig(:);
+    if length(sig) > length(t)
+        warning('Signal longer than t — trimming from %d to %d', length(sig), length(t));
+        sig = sig(1:length(t));
+    end
+end
+
+function sig = generateRadar(t, fs)
+    chirp_duration = 20e-6; % Chirp duration
+    spacing = 300e-6;       % Time between chirps
+    f0_start = 12e6;        % Start frequency
+    f0_end = 8e6;           % End frequency
+
+    sig = zeros(size(t));
+    total_time = t(end);
+    chirp_start_times = 0:spacing:(total_time - chirp_duration);
+
+    for s = chirp_start_times
+        idx = (t >= s) & (t < s + chirp_duration);
+        local_t = t(idx) - s;
+        chirpSignal = chirp(local_t, f0_start, chirp_duration, f0_end, 'linear');
+        sig(idx) = sig(idx) + chirpSignal;
+    end
+
+    % Apply windowing
+    w = tukeywin(length(sig), 0.3);
+    sig = sig .* w(:);
+end
+
+function sig = generatePAL(t, fs)
+    Nsub = 64; % Number of subcarriers
+
+    % Frequency mask for 9–11 MHz
+    freq_resolution = fs / Nsub;
+    freq_vector = (-fs/2 : freq_resolution : fs/2 - freq_resolution);
+    target_mask = (freq_vector >= 9e6 & freq_vector <= 11e6);
+    subcarrier_indices = find(target_mask);
+    subcarrier_indices = mod(subcarrier_indices - 1 + Nsub/2, Nsub) + 1;
+
+    % Create OFDM burst
+    numSymbols = floor(length(t) / Nsub);
+    sigMatrix = zeros(Nsub, numSymbols);
+    burstIdx = round(numSymbols / 2);
+    burstWidth = min(8, numSymbols - burstIdx + 1);
+    burstPower = 500;
+
+    for k = subcarrier_indices
+        sigMatrix(k, burstIdx:burstIdx+burstWidth-1) = burstPower;
+    end
+
+    % Time-domain signal
+    tempSig = ifft(sigMatrix, Nsub, 1); % Size: Nsub x numSymbols
+    sig = reshape(tempSig, [], 1); % Column vector
+
+    % Apply windowing
+    w = tukeywin(length(sig), 0.3);
+    sig = sig .* w(:);
+
+    % Pad if short
+    if length(sig) < length(t)
+        sig(end+1:length(t)) = 0;
+    end
+end

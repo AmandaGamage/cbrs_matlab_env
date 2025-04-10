@@ -2,22 +2,13 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
     %% Properties (Custom)
     properties
         fs = 20e6
-        duration = 250e-6
+        duration = 800e-6
         t
         fc_shift = 5e6
-        
+
         % Internal state
         currentSignal
         cnnModel % pretrained CNN
-    end
-
-    %% RL Properties
-    properties
-        % Define action: 0 = Idle, 1 = Use CH1, 2 = Use CH2
-        ActionInfo = rlFiniteSetSpec([0 1 2])
-
-        % Observation: 1x2 vector: [CH1 occupied, CH2 occupied]
-        ObservationInfo = rlNumericSpec([2 1], 'LowerLimit', 0, 'UpperLimit', 1)
     end
 
     %% Environment State
@@ -25,13 +16,22 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
         CurrentObservation
         StepCount = 0
         MaxSteps = 100
+        LastAction = 0
+        VisualizationEnabled = true
+        LastPrediction = '';
+
     end
 
     methods
         %% Constructor
         function this = rlCBRSEnvironment(cnnModel)
-            this.ObservationInfo.Name = 'channel_state';
-            this.ActionInfo.Name = 'channel_selection';
+            obsInfo = rlNumericSpec([2 1], 'LowerLimit', 0, 'UpperLimit', 1);
+            obsInfo.Name = 'channel_state';
+            actInfo = rlFiniteSetSpec([0 1 2]);
+            actInfo.Name = 'channel_selection';
+
+            this = this@rl.env.MATLABEnvironment(obsInfo, actInfo);
+
             this.t = (0:1/this.fs:this.duration - 1/this.fs)';
             this.cnnModel = cnnModel;
 
@@ -50,6 +50,7 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
         function [NextObs, Reward, IsDone, LoggedSignals] = step(this, Action)
             LoggedSignals = [];
             this.StepCount = this.StepCount + 1;
+            this.LastAction = Action;
 
             ch1_occ = this.CurrentObservation(1);
             ch2_occ = this.CurrentObservation(2);
@@ -60,7 +61,7 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
             % Reward logic
             switch Action
                 case 0 % Idle
-                    Reward = -0.1; % slight penalty to encourage usage
+                    Reward = -0.1;
                 case 1 % Use CH1
                     Reward = mask(1) * 1 - ch1_occ * 1;
                 case 2 % Use CH2
@@ -72,6 +73,10 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
             IsDone = this.StepCount >= this.MaxSteps;
             this.CurrentObservation = this.generateObservation();
             NextObs = this.CurrentObservation;
+
+            if this.VisualizationEnabled
+                plotEnvironment(this);
+            end
         end
     end
 
@@ -85,9 +90,16 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
 
             ch1 = getChannelSignal(ch1_type, this.t, 0, this.fs);
             ch2 = getChannelSignal(ch2_type, this.t, this.fc_shift, this.fs);
+            minLen = min(length(ch1), length(ch2));
+            ch1 = ch1(1:minLen);
+            ch2 = ch2(1:minLen);
+
+            disp(['[generateObservation] ch1: ' ch1_type ', len = ' num2str(length(ch1))]);
+            disp(['[generateObservation] ch2: ' ch2_type ', len = ' num2str(length(ch2))]);
 
             % Combine both signals
             combined = ch1 + ch2;
+            this.currentSignal = combined;
 
             % Generate spectrogram
             window = hamming(200);
@@ -97,22 +109,35 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
 
             % Convert to image
             specImage = abs(s);
-            specImage = mat2gray(log(1 + specImage)); % Normalize and log scale
-            specImage = imresize(specImage, [227, 227]); % Match CNN input size
+            specImage = mat2gray(log(1 + specImage));
+            specImage = imresize(specImage, [224, 224]);
+            %specImage = repmat(specImage, [1, 1, 3]);
 
-            % Predict incumbent presence with CNN
-            pred = classify(this.cnnModel, repmat(specImage, 1, 1, 3));
 
-            % Parse prediction into channel state
-            % Assume CNN classifies scenarios like: 'Empty', 'Radar', 'LTE', 'Collision'
-            % You can adapt this logic to your own CNN output classes
+            % Predict with CNN
+            pred = classify(this.cnnModel, specImage);
+            predStr = char(pred);
+            this.LastPrediction = predStr;
+            disp(['CNN predicted: ', this.LastPrediction]);
+
+         
+            % Binary CNN: any collision → mark both channels as occupied
             obs = zeros(2, 1);
-            if contains(char(pred), 'Radar')
-                obs(1) = 1;
+            if strcmpi(predStr, 'Collision')
+                obs = [1; 1];  % Mark both channels as potentially dangerous
             end
-            if contains(char(pred), 'Collision') || contains(char(pred), 'Radar')
-                obs(2) = 1;
-            end
+
+        end
+
+
+        function plotEnvironment(this)
+            figure(999); clf;
+            spectrogram(this.currentSignal, hamming(200), 124, 256, this.fs, 'yaxis');
+            title(sprintf('Step: %d | Action: %d', this.StepCount, this.LastAction));
+            xlabel('Time'); ylabel('Frequency (MHz)');
+            ylim([6 12]); colormap jet; colorbar;
+            drawnow;
         end
     end
 end
+
