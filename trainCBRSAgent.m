@@ -1,7 +1,7 @@
 % Load pretrained CNN
 whos('-file', 'cnn_ddpm_resnet.mat')
 
-load cnn_ddpm_resnet.mat trainedNet 
+load fineTunedCBRS_HardNegNet.mat trainedNet 
 cnnModel = trainedNet;
 
 % Create environment

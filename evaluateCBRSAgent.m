@@ -1,5 +1,5 @@
 % Load trained agent
-load('cbrs_signals.mat', 'agent');
+load('trainedCBRSAgent.mat', 'agent');
 trainedAgent = agent;
 
 % Load pretrained CNN model
