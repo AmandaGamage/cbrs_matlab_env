@@ -1,17 +1,14 @@
 classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
-    %% Properties (Custom)
     properties
         fs = 20e6
         duration = 800e-6
         t
         fc_shift = 5e6
-
-        % Internal state
         currentSignal
-        cnnModel % pretrained CNN
+        cnnModel
+        classNames % Now assumes all class names like 'ch1_empty_ch2_primary'
     end
 
-    %% Environment State
     properties
         CurrentObservation
         StepCount = 0
@@ -19,13 +16,11 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
         LastAction = 0
         VisualizationEnabled = true
         LastPrediction = '';
-
     end
 
     methods
-        %% Constructor
         function this = rlCBRSEnvironment(cnnModel)
-            obsInfo = rlNumericSpec([2 1], 'LowerLimit', 0, 'UpperLimit', 1);
+            obsInfo = rlNumericSpec([2 1], 'LowerLimit', 0, 'UpperLimit', 3); % now 0-3
             obsInfo.Name = 'channel_state';
             actInfo = rlFiniteSetSpec([0 1 2]);
             actInfo.Name = 'channel_selection';
@@ -34,40 +29,38 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
 
             this.t = (0:1/this.fs:this.duration - 1/this.fs)';
             this.cnnModel = cnnModel;
-
-            % Initialize
             reset(this);
         end
 
-        %% Reset Function
         function InitialObservation = reset(this)
             this.StepCount = 0;
             this.CurrentObservation = this.generateObservation();
             InitialObservation = this.CurrentObservation;
         end
 
-        %% Step Function
         function [NextObs, Reward, IsDone, LoggedSignals] = step(this, Action)
             LoggedSignals = [];
             this.StepCount = this.StepCount + 1;
             this.LastAction = Action;
 
-            ch1_occ = this.CurrentObservation(1);
-            ch2_occ = this.CurrentObservation(2);
+            ch1_state = this.CurrentObservation(1);
+            ch2_state = this.CurrentObservation(2);
 
-            % SAS-like policy mask
-            mask = ~[ch1_occ, ch2_occ];
+            Reward = -0.1; % default small penalty for doing nothing useful
 
-            % Reward logic
             switch Action
                 case 0 % Idle
-                    Reward = -0.1;
+                    if all((this.CurrentObservation == 0)) % Both channels empty
+                        Reward = -0.1; % Slight penalty for idling when channels are free
+                    else
+                        Reward = 0.2; % Reward for idling if no safe transmission possible
+                    end
+
                 case 1 % Use CH1
-                    Reward = mask(1) * 1 - ch1_occ * 1;
+                    Reward = this.evaluateAction(ch1_state);
+
                 case 2 % Use CH2
-                    Reward = mask(2) * 1 - ch2_occ * 1;
-                otherwise
-                    Reward = -1;
+                    Reward = this.evaluateAction(ch2_state);
             end
 
             IsDone = this.StepCount >= this.MaxSteps;
@@ -78,26 +71,37 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
                 plotEnvironment(this);
             end
         end
+
+        function reward = evaluateAction(~, state)
+            % 0 = Empty, 1 = Primary, 2 = Collision, 3 = Secondary
+            switch state
+                case 0 % Empty
+                    reward = 1.0; % ✅ Good
+                case 1 % Primary
+                    reward = -2.0; % ❌ Big penalty for harming primary
+                case 2 % Collision
+                    reward = -1.5; % ❌ Penalty for colliding
+                case 3 % Secondary
+                    reward = 0.5; % Slight positive if sharing with another LTE
+                otherwise
+                    reward = -1.0; % Unknown behavior
+            end
+        end
     end
 
-    %% Helper: Generate New Observation using CNN
     methods
         function obs = generateObservation(this)
-            % Random scenario selection for each channel
-            types = {'Empty', 'Radar', 'LTE', 'Collision'};
+            % Randomly generate types (could be from a generator or CNN output)
+            types = {'Empty', 'Primary', 'Secondary', 'Collision'};
             ch1_type = types{randi(4)};
             ch2_type = types{randi(4)};
 
+            % Actually combine real signals here if needed
             ch1 = getChannelSignal(ch1_type, this.t, 0, this.fs);
             ch2 = getChannelSignal(ch2_type, this.t, this.fc_shift, this.fs);
             minLen = min(length(ch1), length(ch2));
             ch1 = ch1(1:minLen);
             ch2 = ch2(1:minLen);
-
-            disp(['[generateObservation] ch1: ' ch1_type ', len = ' num2str(length(ch1))]);
-            disp(['[generateObservation] ch2: ' ch2_type ', len = ' num2str(length(ch2))]);
-
-            % Combine both signals
             combined = ch1 + ch2;
             this.currentSignal = combined;
 
@@ -107,28 +111,21 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
             nfft = 256;
             [s, ~, ~] = spectrogram(combined, window, noverlap, nfft, this.fs);
 
-            % Convert to image
             specImage = abs(s);
             specImage = mat2gray(log(1 + specImage));
             specImage = imresize(specImage, [224, 224]);
-            %specImage = repmat(specImage, [1, 1, 3]);
 
+            % Predict label
+            predScores = predict(this.cnnModel, specImage);
+            [~, idx] = max(predScores);
+            predStr = this.cnnModel.Layers(end).Classes(idx);
+            this.LastPrediction = string(predStr);
 
-            % Predict with CNN
-            pred = classify(this.cnnModel, specImage);
-            predStr = char(pred);
-            this.LastPrediction = predStr;
             disp(['CNN predicted: ', this.LastPrediction]);
 
-         
-            % Binary CNN: any collision → mark both channels as occupied
-            obs = zeros(2, 1);
-            if strcmpi(predStr, 'Collision')
-                obs = [1; 1];  % Mark both channels as potentially dangerous
-            end
-
+            % Decode CNN label into observation
+            obs = decodeLabel(this.LastPrediction);
         end
-
 
         function plotEnvironment(this)
             figure(999); clf;
@@ -141,3 +138,27 @@ classdef rlCBRSEnvironment < rl.env.MATLABEnvironment
     end
 end
 
+function obs = decodeLabel(label)
+    % Decode a label like 'ch1_collision_ch2_primary' into numeric states
+    obs = zeros(2,1);
+
+    if contains(label, 'ch1_empty')
+        obs(1) = 0;
+    elseif contains(label, 'ch1_primary')
+        obs(1) = 1;
+    elseif contains(label, 'ch1_secondary') || contains(label, 'ch1_lte')
+        obs(1) = 3;
+    elseif contains(label, 'ch1_collision')
+        obs(1) = 2;
+    end
+
+    if contains(label, 'ch2_empty')
+        obs(2) = 0;
+    elseif contains(label, 'ch2_primary')
+        obs(2) = 1;
+    elseif contains(label, 'ch2_secondary') || contains(label, 'ch2_lte')
+        obs(2) = 3;
+    elseif contains(label, 'ch2_collision')
+        obs(2) = 2;
+    end
+end

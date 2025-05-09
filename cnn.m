@@ -1,22 +1,13 @@
-function trainCollisionCNN(datasetPath, modelSavePath)
-    % Folders that represent "collision" class
-    collisionFolders = [
-        "ch1_empty_ch2_collision", ...
-        "ch1_collision_ch2_empty", ...
-        "ch1_collision_ch2_secondary", ...
-        "ch1_primary_ch2_collision"
-    ];
-
+function trainMultiClassCNN(datasetPath, modelSavePath)
     % Load all labeled image data
     imds = imageDatastore(datasetPath, ...
         'IncludeSubfolders', true, ...
         'LabelSource', 'foldernames', ...
-        'ReadFcn', @readGrayscaleImage);  % Ensures grayscale images
+        'ReadFcn', @readGrayscaleImage);  % Ensure grayscale images
 
-
-    % Binary relabeling: Collision vs NonCollision
-    isCollision = ismember(imds.Labels, collisionFolders);
-    imds.Labels = categorical(isCollision, [0 1], {'NonCollision', 'Collision'});
+    % Count the number of classes
+    classes = categories(imds.Labels);
+    numClasses = numel(classes);
 
     % Balance classes
     tbl = countEachLabel(imds);
@@ -32,7 +23,7 @@ function trainCollisionCNN(datasetPath, modelSavePath)
         'RandXTranslation', [-5 5], ...
         'RandYTranslation', [-5 5]);
 
-    % ResNet18 expects 224x224 RGB images
+    % ResNet18 expects 224x224 images
     inputSize = [224 224 1];
     trainDS = augmentedImageDatastore(inputSize, imdsTrain, ...
         'DataAugmentation', augmenter, ...
@@ -44,15 +35,15 @@ function trainCollisionCNN(datasetPath, modelSavePath)
     net = resnet18;
     lgraph = layerGraph(net);
 
-% === Replace input layer ===
+    % === Replace input layer ===
     newInputLayer = imageInputLayer([224 224 1], ...
         'Name', 'input', ...
         'Normalization', 'zerocenter');
-    lgraph = replaceLayer(lgraph, 'data', newInputLayer);  % 'data' is the input layer name in resnet18
+    lgraph = replaceLayer(lgraph, 'data', newInputLayer);
 
-% === Modify first conv layer to accept 1 channel ===
+    % === Modify first conv layer to accept 1 channel ===
     firstConvLayer = lgraph.Layers(2);
-    newWeights = mean(firstConvLayer.Weights, 3);  % Average over RGB channels
+    newWeights = mean(firstConvLayer.Weights, 3); % Average over RGB channels
     newWeights = reshape(newWeights, size(newWeights,1), size(newWeights,2), 1, []);
     newConvLayer = convolution2dLayer(firstConvLayer.FilterSize, ...
         firstConvLayer.NumFilters, ...
@@ -63,9 +54,9 @@ function trainCollisionCNN(datasetPath, modelSavePath)
         'Name', firstConvLayer.Name);
     lgraph = replaceLayer(lgraph, firstConvLayer.Name, newConvLayer);
 
-    % === Replace final layers for binary classification ===
+    % === Replace final layers for 12-class classification ===
     lgraph = replaceLayer(lgraph, 'fc1000', ...
-        fullyConnectedLayer(2, 'Name', 'fc_binary'));
+        fullyConnectedLayer(numClasses, 'Name', 'fc_multiclass'));
     lgraph = replaceLayer(lgraph, 'ClassificationLayer_predictions', ...
         classificationLayer('Name', 'output'));
 
@@ -85,9 +76,8 @@ function trainCollisionCNN(datasetPath, modelSavePath)
     trainedNet = trainNetwork(trainDS, lgraph, options);
 
     % Save the model
-    save(modelSavePath, 'trainedNet');
+    save(modelSavePath, 'trainedNet', 'classes');
 end
-
 
 % === main script: cnn.m ===
 datasetPaths = {
@@ -103,7 +93,7 @@ modelNames = {
 };
 
 for i = 1:length(datasetPaths)
-    trainCollisionCNN(datasetPaths{i}, modelNames{i});
+    trainMultiClassCNN(datasetPaths{i}, modelNames{i});
 end
 
 function img = readGrayscaleImage(filename)

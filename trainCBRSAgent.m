@@ -1,7 +1,6 @@
 % Load pretrained CNN
-whos('-file', 'cnn_ddpm_resnet.mat')
-
-load fineTunedCBRS_HardNegNet.mat trainedNet 
+whos('-file', 'cnn_vqvae_resnet.mat')
+load cnn_vqvae_resnet.mat trainedNet 
 cnnModel = trainedNet;
 
 % Create environment
@@ -24,13 +23,7 @@ dnn = [
 criticOpts = rlRepresentationOptions( ...
     'LearnRate', 1e-3, ...
     'GradientThreshold', 1, ...
-    'UseDevice', 'gpu');  
-
-if canUseGPU
-    disp('✅ GPU available and will be used.');
-else
-    warning('⚠️ GPU not available. Training will fall back to CPU.');
-end
+    'UseDevice', 'gpu');
 
 critic = rlQValueRepresentation(dnn, obsInfo, actInfo, ...
     'Observation', {'input'}, criticOpts);
@@ -56,4 +49,4 @@ trainingStats = train(agent, env, trainOpts);
 
 save(['trainedAgent_' datetime("now", 'yyyymmdd_HHMMSS') '.mat'], 'agent');
 
-evaluateCBRSAgent(agent, env); 
+evaluateCBRSAgent(agent, env);

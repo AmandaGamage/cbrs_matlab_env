@@ -12,80 +12,64 @@ numPulses = floor(t_total / pulseRepetitionInterval);
 f_start = 3.55e9; % Start frequency (3.55 GHz)
 f_end = 3.65e9; % End frequency (3.65 GHz)
 
-%% Step 2: Generate Incumbent (Radar) User Signal with Grouped Vertical Pulses
-incumbentSignal = zeros(size(t));
-
+%% Step 2: Generate Primary (Radar) Signal
+primarySignal = zeros(size(t));
 for i = 1:numPulses
     pulseStartIdx = round((i-1) * pulseRepetitionInterval * fs) + 1;
     pulseEndIdx = min(round(pulseStartIdx + pulseWidth * fs), length(t));
-    
     pulseTime = t(pulseStartIdx:pulseEndIdx) - t(pulseStartIdx);
-    
-    % Frequency hopping: Increase step size
-    frequency = f_start + (f_end - f_start) * (i / numPulses); % Simple linear hopping
-    
-    incumbentSignal(pulseStartIdx:pulseEndIdx) = 10 * sin(2 * pi * frequency * pulseTime); % Increase amplitude significantly
+    frequency = f_start + (f_end - f_start) * (i / numPulses); % Linear hopping
+    primarySignal(pulseStartIdx:pulseEndIdx) = 10 * sin(2 * pi * frequency * pulseTime); % Strong amplitude
 end
 
-%% **Step 3: Generate PAL User Signal**
-M = 16; % 16-QAM modulation
-Nsub = 32; % Number of OFDM subcarriers
-numSymbols = floor(length(t)/Nsub); % Ensure integer size
+%% Step 3: Generate Secondary (GAA/PAL) Signal
+M = 16; % 16-QAM
+Nsub = 32; 
+numSymbols = floor(length(t)/Nsub);
 
-dataBits = randi([0 M-1], Nsub, numSymbols); % Random data
-qamSymbols = qammod(dataBits, M, 'UnitAveragePower', true); % 16-QAM modulation
-palSignal = ifft(qamSymbols, Nsub); % Apply IFFT to generate OFDM
+dataBits = randi([0 M-1], Nsub, numSymbols);
+qamSymbols = qammod(dataBits, M, 'UnitAveragePower', true);
+secondarySignal = ifft(qamSymbols, Nsub);
 
-% **Step 3: Add a High-Power Burst in a Localized Region**
-burstTimeIdx = round(numSymbols / 2); % Center symbol-wise
-burstFreqIdx = round(Nsub / 2)+1; % Center burst in frequency
-
-burstPower = 100; % Higher power for bright intensity
+burstTimeIdx = round(numSymbols / 2);
+burstFreqIdx = round(Nsub / 2) + 1;
+burstPower = 100; 
 burstWidth = 5;
-palSignal(burstFreqIdx, burstTimeIdx:burstTimeIdx+burstWidth) = burstPower * log2(burstPower) * abs(burstPower); 
-%palSignal(burstFreqIdx, burstTimeIdx:burstTimeIdx+burstWidth) = burstPower; 
+secondarySignal(burstFreqIdx, burstTimeIdx:burstTimeIdx+burstWidth) = burstPower * log2(burstPower) * abs(burstPower); 
 
-toneFreqIdx = round(Nsub / 4); % Place at a lower subcarrier
-palSignal(toneFreqIdx, :) = 5; % Moderate intensity across all time
+toneFreqIdx = round(Nsub / 4);
+secondarySignal(toneFreqIdx, :) = 5;
 
-% **Step 4: Add Background Noise**
 noisePower = 0.1;
-palSignal = palSignal + noisePower * randn(size(palSignal)); % Add Gaussian noise
+secondarySignal = secondarySignal + noisePower * randn(size(secondarySignal));
 
-%% **Step 4: Generate GAA User Signal (OFDM Modulated)**
-Nsub = 64; % Number of OFDM subcarriers
-ofdmSymbols = qammod(randi([0 M-1], Nsub, 1), M); % Generate OFDM symbols
-gaaSignal = ifft(ofdmSymbols, Nsub); % Apply IFFT for OFDM
-Nrep = floor(length(t) / Nsub); % Ensure an integer replication factor
-gaaSignal = repmat(gaaSignal, [1, Nrep]); % Repeat to match time
+%% Step 4: Generate Background (if needed)
+Nsub = 64;
+ofdmSymbols = qammod(randi([0 M-1], Nsub, 1), M);
+backgroundSignal = ifft(ofdmSymbols, Nsub);
+Nrep = floor(length(t) / Nsub);
+backgroundSignal = repmat(backgroundSignal, [1, Nrep]);
 
-%% Step 5: Convert to Spectrograms
+%% Step 5: Plot Spectrograms
 figure;
 subplot(3,1,1);
-% Spectrogram parameters optimized for showing vertical lines
-window = hamming(24); % Very short window for better time resolution
-noverlap = 12; 
-nfft = 1024; % Higher frequency resolution
-[~, F, T, P] = spectrogram(incumbentSignal, window, noverlap, nfft, fs, 'yaxis');
-
-% Plot with high contrast to make pulses stand out as white
+window = hamming(24);
+noverlap = 12;
+nfft = 1024;
+[~, F, T, P] = spectrogram(primarySignal, window, noverlap, nfft, fs, 'yaxis');
 imagesc(T, F/1e6, 10*log10(abs(P)));
-colormap(flipud(gray)); % White is high intensity, black is low
+colormap(flipud(gray)); axis xy; clim([-80 0]);
 ylabel('Frequency (MHz)');
 xlabel('Time (s)');
-title('Spectrogram of Incumbent (Radar) User');
-axis xy;
-clim([-80 0]); % More extreme contrast to make pulses whiter
+title('Spectrogram of Primary (Radar) User');
 colorbar;
 
-% Add a colorbar for reference
-colorbar;
 subplot(3,1,2);
-spectrogram(palSignal(:), 64, 50, 128, fs, 'yaxis'); 
-colormap gray; % Convert to black and white
-title('Spectrogram of PAL User');
+spectrogram(secondarySignal(:), 64, 50, 128, fs, 'yaxis'); 
+colormap gray;
+title('Spectrogram of Secondary User');
 
 subplot(3,1,3);
-spectrogram(gaaSignal(:), 128, 120, 128, fs, 'yaxis');
+spectrogram(backgroundSignal(:), 128, 120, 128, fs, 'yaxis');
 colormap gray;
-title('Spectrogram of GAA User');
+title('Spectrogram of Background User');
