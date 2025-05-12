@@ -80,16 +80,23 @@ function trainMultiClassCNN(datasetPath, modelSavePath)
 end
 
 % === main script: cnn.m ===
-datasetPaths = {
-    'E:\Msc\Lab\data\fid_data\combined_DDPM'
-    'E:\Msc\Lab\data\fid_data\combined_GAN'
-    'E:\Msc\Lab\data\fid_data\combined_VQ-VAE'
-};
+%datasetPaths = {
+    %'E:\Msc\Lab\data\fid_data\combined_DDPM'
+    %'E:\Msc\Lab\data\fid_data\combined_GAN'
+    %'E:\Msc\Lab\data\fid_data\combined_VQ-VAE'
+%};
 
-modelNames = {
-    'cnn_ddpm_resnet'
-    'cnn_gan_resnet'
-    'cnn_vqvae_resnet'
+%modelNames = {
+ %   'cnn_ddpm_resnet'
+  %  'cnn_gan_resnet'
+   % 'cnn_vqvae_resnet'
+%}; 
+datasetPaths = {
+    'E:\Msc\Lab\data\fid_data\original_data'
+    };
+
+modelNames={
+'cnn_original_resnet'    
 };
 
 for i = 1:length(datasetPaths)

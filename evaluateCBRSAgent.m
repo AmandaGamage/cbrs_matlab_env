@@ -1,9 +1,9 @@
 % Load trained agent
-load('trainedDQNVQVAEAgent.mat', 'agent');
+load('trainedOriginalDQNGANAgent.mat', 'agent');
 trainedAgent = agent;
 
 % Load pretrained CNN model
-load('cnn_vqvae_resnet.mat', 'trainedNet');
+load('cnn_original_resnet.mat', 'trainedNet');
 cnnModel = trainedNet;
 
 % Create evaluation environment

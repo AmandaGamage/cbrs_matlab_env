@@ -1,6 +1,6 @@
 % Load pretrained CNN
-whos('-file', 'cnn_vqvae_resnet.mat')
-load cnn_vqvae_resnet.mat trainedNet 
+whos('-file', 'cnn_original_resnet.mat')
+load cnn_original_resnet.mat trainedNet 
 cnnModel = trainedNet;
 
 % Create environment
